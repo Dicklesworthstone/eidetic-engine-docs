@@ -1,190 +1,5 @@
 # Eidetic Engine in Plain English:
 
-Agent Loop Code ([agent_master_loop.py](https://github.com/Dicklesworthstone/ultimate_mcp_client/blob/main/agent_master_loop.py)):
-
-Here is plain English, high-level summary of what each method in `agent_master_loop.py` is primarily responsible for. This helps in understanding the overall architecture and flow without getting bogged down in implementation details immediately.
-
-
-**Class `AgentMasterLoop`**
-
-*   **`__init__(self, mcp_client_instance, default_llm_model_string, agent_state_file)`**
-    *   **Purpose:** Sets up the agent when it's first created.
-    *   **Does:** It stores essential connections (like the MCPClient to talk to servers/tools), remembers which AI model it should use for its main thinking, and knows where to save/load its progress. It also initializes its internal "state" (like current tasks, plans, error counts) to a fresh start and prepares systems for logging and background tasks.
-
-*   **`async def shutdown(self)`**
-    *   **Purpose:** To safely stop the agent and clean up.
-    *   **Does:** It signals all parts of the agent to stop, waits for any background activities to finish cleanly, and then saves its current state so it can resume later if needed.
-
-*   **`_construct_agent_prompt(self, current_task_goal_desc, context)`**
-    *   **Purpose:** To create the detailed message (prompt) that will be sent to the main AI model (LLM) for decision-making.
-    *   **Does:** It assembles a comprehensive set of instructions for the LLM, including its identity, overall process, available tools (with how to use them), and strategies for recovering from errors. It then adds the current situation: the agent's understanding of its goals, its current plan, any recent errors, and relevant information from its memory system (UMS). The prompt is tailored based on whether the agent is starting a brand new task or continuing an existing one.
-
-*   **`_background_task_done(self, task)` and `_background_task_done_safe(self, task)`**
-    *   **Purpose:** To handle the completion (or failure) of a background task.
-    *   **Does:** When a background activity finishes, these helpers log any errors, remove the task from the active list, and free up resources so another background task can start if needed.
-
-*   **`_start_background_task(self, coro_fn, *args, **kwargs)`**
-    *   **Purpose:** To initiate a new background activity without stopping the agent's main work.
-    *   **Does:** It takes a function that needs to be run in the background, creates a new managed task for it, and adds it to a list of active background jobs. It ensures these tasks don't run all at once if there are too many.
-
-*   **`_add_bg_task(self, task)`**
-    *   **Purpose:** Internal helper to safely add a newly created background task to the agent's tracking set.
-    *   **Does:** Adds the provided task object to the `self.state.background_tasks` set, ensuring thread-safety with a lock.
-
-*   **`_cleanup_background_tasks(self)`**
-    *   **Purpose:** To stop and clean up all active background tasks, usually during shutdown.
-    *   **Does:** It goes through all currently running background activities, cancels them, and waits for them to acknowledge the cancellation, logging any issues.
-
-*   **`async def _estimate_tokens_anthropic(self, data)`**
-    *   **Purpose:** A helper to guess how many "pieces" or "tokens" a piece of text will count as for Anthropic's AI models.
-    *   **Does:** It sends the text to Anthropic's API (if available) to get an accurate count, or uses a rough character-based estimation if the API call fails. This helps manage how much information is sent to the AI to avoid exceeding limits.
-
-*   **`async def _with_retries(self, coro_fun, ...)`**
-    *   **Purpose:** A general helper (decorator pattern) to automatically retry a function if it fails.
-    *   **Does:** It wraps another function. If the wrapped function fails with certain types of errors (like network issues or temporary unavailability), it waits a short, increasing amount of time and tries again, up to a set number of retries.
-
-*   **`async def _save_agent_state(self)`**
-    *   **Purpose:** To save the agent's current operational state to a file.
-    *   **Does:** It gathers all important current information about the agent (like its current task ID, goal list, plan, error counts, etc.) and writes it to a JSON file so the agent can resume later.
-
-*   **`async def _load_agent_state(self)`**
-    *   **Purpose:** To load a previously saved operational state from a file.
-    *   **Does:** It reads the JSON file, restores the agent's internal information, and performs some checks to ensure the loaded state is valid. If no file exists or it's corrupted, it starts the agent with a fresh, default state.
-
-*   **`_find_tool_server(self, tool_name)`**
-    *   **Purpose:** To figure out which connected server computer has the specific tool the agent wants to use.
-    *   **Does:** It looks at the list of available tools from all connected MCP servers and returns the name of the server that provides the requested tool.
-
-*   **`async def inject_manual_thought(self, content, thought_type)`**
-    *   **Purpose:** To allow an external operator (like a human user) to directly insert a thought or piece of guidance into the agent's ongoing reasoning process.
-    *   **Does:** It takes the provided text, records it as a "user guidance" thought in the agent's current UMS thought chain, and also stores it as a distinct, high-priority memory in the UMS. It then flags the agent that it might need to reconsider its current plan based on this new input.
-
-*   **`async def initialize(self)`**
-    *   **Purpose:** The main setup routine when the agent first starts or restarts.
-    *   **Does:** It loads any saved state, connects to the MCPClient to understand available tools and servers, gets the list of tool schemas formatted for its AI model, checks if all essential tools are available, and then validates its current workflow and goal status with the UMS, potentially setting up a default thought chain or initial UMS goal if resuming an existing workflow.
-
-*   **`async def _set_default_thought_chain_id(self)`**
-    *   **Purpose:** To ensure there's an active "notepad" (thought chain) in the UMS for the current task where the agent can record its reasoning.
-    *   **Does:** If the agent is working on a task (workflow) but doesn't have a specific thought chain ID assigned, this function queries the UMS for the primary thought chain associated with that workflow and sets it as the agent's current one.
-
-*   **`async def _check_workflow_exists(self, workflow_id)`**
-    *   **Purpose:** To verify with the UMS if a given workflow ID is valid and known.
-    *   **Does:** It calls a UMS tool (`get_workflow_details`) to check if the workflow exists.
-
-*   **`async def _validate_goal_stack_on_load(self)`**
-    *   **Purpose:** When the agent loads its state, this ensures its internal list of current goals (goal stack) is synchronized and consistent with what's actually stored in the UMS.
-    *   **Does:** If the agent loaded a `current_goal_id`, it attempts to rebuild the goal hierarchy from that ID upwards by querying UMS. If the UMS version matches or is valid, the agent's local stack is updated. If not, or if no `current_goal_id` was loaded, the local stack is cleared to avoid inconsistency.
-
-*   **`_detect_plan_cycle(self, plan)`**
-    *   **Purpose:** To check if the agent's current plan has any circular dependencies (e.g., step A needs B, B needs C, C needs A).
-    *   **Does:** It analyzes the `depends_on` fields of the plan steps to see if any step is waiting for another step that, directly or indirectly, is waiting for the first step, which would create an unresolvable loop.
-
-*   **`async def _check_prerequisites(self, ids)`**
-    *   **Purpose:** Before executing a plan step that depends on other UMS actions, this checks if those prerequisite actions have been completed in the UMS.
-    *   **Does:** It takes a list of UMS action IDs and calls a UMS tool (`get_action_details`) to query their status, returning whether all of them are marked "completed".
-
-*   **`async def _record_action_start_internal(self, tool_name, tool_args, planned_dependencies)`**
-    *   **Purpose:** An internal helper to log the beginning of an agent's action (typically a tool call) in the UMS.
-    *   **Does:** It calls the UMS tool `record_action_start` with details about the tool being used and its arguments. If the action being started depends on other previously recorded UMS actions (based on the agent's plan), it also calls `_record_action_dependencies_internal`.
-
-*   **`async def _record_action_dependencies_internal(self, source_id, target_ids)`**
-    *   **Purpose:** An internal helper to log dependencies between UMS actions.
-    *   **Does:** For a given source UMS action ID, it calls the UMS tool `add_action_dependency` for each target UMS action ID it depends on.
-
-*   **`async def _record_action_completion_internal(self, action_id, result)`**
-    *   **Purpose:** An internal helper to log the completion (or failure) of an agent's action in the UMS.
-    *   **Does:** It calls the UMS tool `record_action_completion` with the UMS action ID, the outcome status (completed/failed), and the result obtained from the tool.
-
-*   **`async def _run_auto_linking(self, memory_id, *, workflow_id, context_id)`**
-    *   **Purpose:** A background task to automatically try to find and create semantic links between a newly stored memory and existing memories in the UMS.
-    *   **Does:** After a short delay, it takes a new memory, searches the UMS for other semantically similar memories, and if any are found above a certain similarity threshold, it calls the UMS tool `create_memory_link` to create a "related" link between them.
-
-*   **`async def _check_and_trigger_promotion(self, memory_id, *, workflow_id, context_id)`**
-    *   **Purpose:** A background task to check if a memory in UMS has become important enough (e.g., due to frequent access or high confidence) to be "promoted" to a higher cognitive level (like from episodic to semantic).
-    *   **Does:** It calls the UMS tool `promote_memory_level` for the given memory ID. The UMS tool itself contains the logic to decide if promotion is warranted and performs the update.
-
-*   **`async def _execute_tool_call_internal(self, tool_name, arguments, record_action, planned_dependencies)`**
-    *   **Purpose:** The agent's central function for executing any tool, whether it's a UMS tool or an internal agent function.
-    *   **Does:** It finds the server for the tool, automatically adds common arguments like `workflow_id` if needed, checks prerequisites (via `_check_prerequisites`), records the action start in UMS (if `record_action` is true and it's not an internal/meta tool), executes the tool via `MCPClient.execute_tool` (with retries), records the action completion in UMS, updates internal tool usage statistics, and triggers background tasks for memory linking or promotion if the tool call resulted in new memories or significant memory access. It also handles errors and updates the agent's `last_error_details`.
-
-*   **`async def _handle_workflow_and_goal_side_effects(self, tool_name, arguments, result_content)`**
-    *   **Purpose:** To update the agent's internal state (`self.state`) after specific UMS tools related to workflow or goal management have been successfully executed.
-    *   **Does:**
-        *   If `TOOL_CREATE_WORKFLOW` succeeded: It sets the agent's current `workflow_id`, `context_id`, `thought_chain_id`, creates the root UMS goal for this new workflow (by calling `TOOL_CREATE_GOAL`), updates the agent's `goal_stack` and `current_goal_id` to this new root UMS goal, and sets an initial plan step to assess this new UMS goal.
-        *   If `TOOL_CREATE_GOAL` (called by the LLM) succeeded: It adds the new UMS goal to the agent's `goal_stack`, makes it the `current_goal_id`, and sets a plan to start working on this new sub-goal.
-        *   If `TOOL_UPDATE_GOAL_STATUS` succeeded (marking a UMS goal as completed/failed): It updates the status of that goal in the agent's local `goal_stack`. If the marked goal was the agent's `current_goal_id` and is now terminal, it pops it, sets the `current_goal_id` to its parent (from UMS result), rebuilds the local `goal_stack` view from UMS for this new parent, and sets a plan to re-assess. If a root UMS goal was finished, it sets `self.state.goal_achieved_flag`.
-        *   If `TOOL_UPDATE_WORKFLOW_STATUS` succeeded (marking a workflow terminal): If it was the agent's current workflow, it pops it from the `workflow_stack`. If there's a parent workflow, it switches focus to that; otherwise, it signals overall completion.
-
-*   **`async def _fetch_goal_stack_from_ums(self, leaf_goal_id)`**
-    *   **Purpose:** To get the full hierarchy of parent goals from the UMS, leading up to a given (leaf) goal ID.
-    *   **Does:** Starting with the `leaf_goal_id`, it repeatedly calls the UMS tool `get_goal_details` to fetch a goal, then gets its `parent_goal_id`, and fetches that parent, continuing until it reaches a goal with no parent (a root goal) or hits a depth limit. It returns these goals as a list, ordered from root to leaf.
-
-*   **`async def _apply_heuristic_plan_update(self, last_decision, last_tool_result_content)`**
-    *   **Purpose:** A fallback mechanism to update the agent's plan if the LLM doesn't explicitly provide a new plan (e.g., after a simple thought or a tool call that doesn't inherently lead to a replan).
-    *   **Does:** It looks at the last LLM decision and tool result. If an action was successful, it marks the current plan step as "completed," adds a summary of the result, and removes the step from the plan. If the plan becomes empty, it adds a default next step (like "Analyze overall result"). If an action failed, it marks the step "failed" and inserts a new step to "Analyze failure... and replan," setting `needs_replan` to true. It also manages error counters and success counters for meta-cognition.
-
-*   **`_adapt_thresholds(self, stats)`**
-    *   **Purpose:** To dynamically adjust how frequently the agent performs self-reflection and memory consolidation based on its recent performance and memory state.
-    *   **Does:** It looks at UMS statistics (like the ratio of temporary vs. permanent memories, tool failure rates). If there are too many temporary memories, it makes the agent consolidate memories sooner. If there are many errors, it makes the agent reflect on its process sooner. If things are going smoothly, it lets the agent work longer before these meta-cognitive pauses.
-
-*   **`async def _run_periodic_tasks(self)`**
-    *   **Purpose:** The agent's internal "scheduler" for triggering various background and meta-cognitive activities.
-    *   **Does:** It checks several counters/timers. If enough successful actions have occurred or enough loops have passed, it triggers UMS tools for:
-        *   Reflection (`generate_reflection`) on its recent activities.
-        *   Memory consolidation (`consolidate_memories`) to summarize or find insights in existing memories.
-        *   Working memory optimization (`optimize_working_memory`) and focus update (`auto_update_focus`).
-        *   Checking if any memories are ready for promotion (`_trigger_promotion_checks`).
-        *   Fetching UMS statistics (`compute_memory_statistics`) to adapt its thresholds.
-        *   Running UMS maintenance (`delete_expired_memories`).
-
-*   **`async def _trigger_promotion_checks(self)`**
-    *   **Purpose:** To identify candidate memories in UMS that might be ready for promotion to a higher cognitive level and start background checks for them.
-    *   **Does:** It queries the UMS for recently accessed episodic memories and semantic memories that are procedures/skills. For each candidate, it starts a background task (`_check_and_trigger_promotion`) to evaluate if it should be promoted.
-
-*   **`async def _gather_context(self)`** (As per your latest version)
-    *   **Purpose:** To collect all the necessary information from the agent's internal state and the UMS that the LLM will need to make its next decision.
-    *   **Does:**
-        1.  Assembles information from the agent's own state (current plan, last action, errors, workflow stack, current thought chain ID, meta-feedback).
-        2.  Constructs the `agent_assembled_goal_context` by:
-            *   If a `current_goal_id` is set, it first tries to fetch the full goal stack from UMS leading to this goal using `_fetch_goal_stack_from_ums`.
-            *   If the UMS fetch is successful and consistent, it uses that.
-            *   If the UMS fetch fails or is inconsistent, but the agent's internal `self.state.goal_stack` seems valid for the `current_goal_id` (important for the turn right after a new root goal is created by the agent), it uses the agent's local stack.
-            *   Otherwise, it records an error if goal context can't be determined.
-        3.  Calls the UMS tool `get_rich_context_package` to get a bundle of relevant memories (working, core, proactive, procedural) and contextual links from the UMS for the current workflow/context.
-        4.  Optionally (though currently commented out in your code), it could perform an agent-side compression of the gathered context if it's too large.
-        5.  Returns a comprehensive dictionary (`context_payload`) containing all this information.
-
-*   **`async def prepare_next_turn_data(self, overall_goal)`**
-    *   **Purpose:** This is the main method called by the MCPClient to get everything needed for the LLM to take its next "turn."
-    *   **Does:** It first runs any scheduled periodic/background tasks (`_run_periodic_tasks`). Then, it gathers all the current context using `_gather_context`. Finally, it uses this context and the `overall_goal` (or current operational goal) to build the actual prompt messages for the LLM via `_construct_agent_prompt`. It returns these messages, the list of tool schemas the LLM can use, and a snapshot of the context that was gathered.
-
-*   **`async def execute_llm_decision(self, llm_decision)`**
-    *   **Purpose:** To take the decision made by the LLM and carry it out.
-    *   **Does:**
-        *   It parses the LLM's decision, which could be:
-            *   To call a tool: It then uses `_execute_tool_call_internal` to run the tool.
-            *   To record a thought: It calls `TOOL_RECORD_THOUGHT`.
-            *   To signal overall completion: It marks the root UMS goal as completed and sets a flag.
-            *   To update the plan: It validates and applies the new plan from the LLM.
-            *   An error from the LLM: It logs this and sets up for replanning.
-        *   If the LLM didn't provide an explicit plan update (and didn't just call the plan update tool), it uses `_apply_heuristic_plan_update` to make a common-sense adjustment to the current plan (e.g., mark step complete, handle failure).
-        *   It checks if the agent has made too many consecutive errors and stops if so.
-        *   It saves the agent's state.
-        *   It determines if the agent should continue looping or stop (e.g., if the goal is achieved, max errors, or shutdown signaled).
-
-*   **`async def run_main_loop(self, initial_goal, max_loops)`**
-    *   **Purpose:** This method is called by MCPClient's `run_self_driving_agent` to execute one cycle of the agent's operation when it's running autonomously.
-    *   **Does:**
-        *   If it's the very first run for this agent instance (no `workflow_id` yet), it calls `TOOL_CREATE_WORKFLOW` (via `_execute_tool_call_internal`) to establish the initial UMS workflow and its root UMS goal based on the `initial_goal`.
-        *   It increments its internal loop counter.
-        *   It then calls `prepare_next_turn_data` to get the prompt, tools, and context for the LLM.
-        *   It returns this package of data to the MCPClient, which will then make the actual LLM call and pass the decision back to the agent's `execute_llm_decision` method (orchestrated by `run_self_driving_agent` in MCPClient).
-        *   It signals to MCPClient if the agent believes it should stop (e.g., goal achieved, shutdown).
-
-This should give a good overview of each method's role in the agent's lifecycle!
-
----
-
 Unified Memory System Code ([unified_memory_system.py](https://github.com/Dicklesworthstone/ultimate_mcp_server/blob/main/ultimate_mcp_server/tools/unified_memory_system.py))
 
 **Overall Purpose:** This module acts as the "brain's librarian and project manager" for your AI agent. It provides a structured way to store, retrieve, and relate all kinds of information (memories, thoughts, actions, created files/artifacts, goals) and to track the progress of tasks (workflows). It uses a database (SQLite) to keep everything organized and persistent.
@@ -494,3 +309,186 @@ Unified Memory System Code ([unified_memory_system.py](https://github.com/Dickle
     *   **Purpose:** To create the Mermaid diagram syntax for a network of memories.
     *   **Does:** Takes a list of memory data objects and a list of link objects. It defines Mermaid nodes for each memory (styled by level, highlighting the `center_memory_id`) and then draws edges between them based on the `links` data.
 
+---
+
+
+Agent Loop Code ([agent_master_loop.py](https://github.com/Dicklesworthstone/ultimate_mcp_client/blob/main/agent_master_loop.py)):
+
+Here is plain English, high-level summary of what each method in `agent_master_loop.py` is primarily responsible for. This helps in understanding the overall architecture and flow without getting bogged down in implementation details immediately.
+
+
+**Class `AgentMasterLoop`**
+
+*   **`__init__(self, mcp_client_instance, default_llm_model_string, agent_state_file)`**
+    *   **Purpose:** Sets up the agent when it's first created.
+    *   **Does:** It stores essential connections (like the MCPClient to talk to servers/tools), remembers which AI model it should use for its main thinking, and knows where to save/load its progress. It also initializes its internal "state" (like current tasks, plans, error counts) to a fresh start and prepares systems for logging and background tasks.
+
+*   **`async def shutdown(self)`**
+    *   **Purpose:** To safely stop the agent and clean up.
+    *   **Does:** It signals all parts of the agent to stop, waits for any background activities to finish cleanly, and then saves its current state so it can resume later if needed.
+
+*   **`_construct_agent_prompt(self, current_task_goal_desc, context)`**
+    *   **Purpose:** To create the detailed message (prompt) that will be sent to the main AI model (LLM) for decision-making.
+    *   **Does:** It assembles a comprehensive set of instructions for the LLM, including its identity, overall process, available tools (with how to use them), and strategies for recovering from errors. It then adds the current situation: the agent's understanding of its goals, its current plan, any recent errors, and relevant information from its memory system (UMS). The prompt is tailored based on whether the agent is starting a brand new task or continuing an existing one.
+
+*   **`_background_task_done(self, task)` and `_background_task_done_safe(self, task)`**
+    *   **Purpose:** To handle the completion (or failure) of a background task.
+    *   **Does:** When a background activity finishes, these helpers log any errors, remove the task from the active list, and free up resources so another background task can start if needed.
+
+*   **`_start_background_task(self, coro_fn, *args, **kwargs)`**
+    *   **Purpose:** To initiate a new background activity without stopping the agent's main work.
+    *   **Does:** It takes a function that needs to be run in the background, creates a new managed task for it, and adds it to a list of active background jobs. It ensures these tasks don't run all at once if there are too many.
+
+*   **`_add_bg_task(self, task)`**
+    *   **Purpose:** Internal helper to safely add a newly created background task to the agent's tracking set.
+    *   **Does:** Adds the provided task object to the `self.state.background_tasks` set, ensuring thread-safety with a lock.
+
+*   **`_cleanup_background_tasks(self)`**
+    *   **Purpose:** To stop and clean up all active background tasks, usually during shutdown.
+    *   **Does:** It goes through all currently running background activities, cancels them, and waits for them to acknowledge the cancellation, logging any issues.
+
+*   **`async def _estimate_tokens_anthropic(self, data)`**
+    *   **Purpose:** A helper to guess how many "pieces" or "tokens" a piece of text will count as for Anthropic's AI models.
+    *   **Does:** It sends the text to Anthropic's API (if available) to get an accurate count, or uses a rough character-based estimation if the API call fails. This helps manage how much information is sent to the AI to avoid exceeding limits.
+
+*   **`async def _with_retries(self, coro_fun, ...)`**
+    *   **Purpose:** A general helper (decorator pattern) to automatically retry a function if it fails.
+    *   **Does:** It wraps another function. If the wrapped function fails with certain types of errors (like network issues or temporary unavailability), it waits a short, increasing amount of time and tries again, up to a set number of retries.
+
+*   **`async def _save_agent_state(self)`**
+    *   **Purpose:** To save the agent's current operational state to a file.
+    *   **Does:** It gathers all important current information about the agent (like its current task ID, goal list, plan, error counts, etc.) and writes it to a JSON file so the agent can resume later.
+
+*   **`async def _load_agent_state(self)`**
+    *   **Purpose:** To load a previously saved operational state from a file.
+    *   **Does:** It reads the JSON file, restores the agent's internal information, and performs some checks to ensure the loaded state is valid. If no file exists or it's corrupted, it starts the agent with a fresh, default state.
+
+*   **`_find_tool_server(self, tool_name)`**
+    *   **Purpose:** To figure out which connected server computer has the specific tool the agent wants to use.
+    *   **Does:** It looks at the list of available tools from all connected MCP servers and returns the name of the server that provides the requested tool.
+
+*   **`async def inject_manual_thought(self, content, thought_type)`**
+    *   **Purpose:** To allow an external operator (like a human user) to directly insert a thought or piece of guidance into the agent's ongoing reasoning process.
+    *   **Does:** It takes the provided text, records it as a "user guidance" thought in the agent's current UMS thought chain, and also stores it as a distinct, high-priority memory in the UMS. It then flags the agent that it might need to reconsider its current plan based on this new input.
+
+*   **`async def initialize(self)`**
+    *   **Purpose:** The main setup routine when the agent first starts or restarts.
+    *   **Does:** It loads any saved state, connects to the MCPClient to understand available tools and servers, gets the list of tool schemas formatted for its AI model, checks if all essential tools are available, and then validates its current workflow and goal status with the UMS, potentially setting up a default thought chain or initial UMS goal if resuming an existing workflow.
+
+*   **`async def _set_default_thought_chain_id(self)`**
+    *   **Purpose:** To ensure there's an active "notepad" (thought chain) in the UMS for the current task where the agent can record its reasoning.
+    *   **Does:** If the agent is working on a task (workflow) but doesn't have a specific thought chain ID assigned, this function queries the UMS for the primary thought chain associated with that workflow and sets it as the agent's current one.
+
+*   **`async def _check_workflow_exists(self, workflow_id)`**
+    *   **Purpose:** To verify with the UMS if a given workflow ID is valid and known.
+    *   **Does:** It calls a UMS tool (`get_workflow_details`) to check if the workflow exists.
+
+*   **`async def _validate_goal_stack_on_load(self)`**
+    *   **Purpose:** When the agent loads its state, this ensures its internal list of current goals (goal stack) is synchronized and consistent with what's actually stored in the UMS.
+    *   **Does:** If the agent loaded a `current_goal_id`, it attempts to rebuild the goal hierarchy from that ID upwards by querying UMS. If the UMS version matches or is valid, the agent's local stack is updated. If not, or if no `current_goal_id` was loaded, the local stack is cleared to avoid inconsistency.
+
+*   **`_detect_plan_cycle(self, plan)`**
+    *   **Purpose:** To check if the agent's current plan has any circular dependencies (e.g., step A needs B, B needs C, C needs A).
+    *   **Does:** It analyzes the `depends_on` fields of the plan steps to see if any step is waiting for another step that, directly or indirectly, is waiting for the first step, which would create an unresolvable loop.
+
+*   **`async def _check_prerequisites(self, ids)`**
+    *   **Purpose:** Before executing a plan step that depends on other UMS actions, this checks if those prerequisite actions have been completed in the UMS.
+    *   **Does:** It takes a list of UMS action IDs and calls a UMS tool (`get_action_details`) to query their status, returning whether all of them are marked "completed".
+
+*   **`async def _record_action_start_internal(self, tool_name, tool_args, planned_dependencies)`**
+    *   **Purpose:** An internal helper to log the beginning of an agent's action (typically a tool call) in the UMS.
+    *   **Does:** It calls the UMS tool `record_action_start` with details about the tool being used and its arguments. If the action being started depends on other previously recorded UMS actions (based on the agent's plan), it also calls `_record_action_dependencies_internal`.
+
+*   **`async def _record_action_dependencies_internal(self, source_id, target_ids)`**
+    *   **Purpose:** An internal helper to log dependencies between UMS actions.
+    *   **Does:** For a given source UMS action ID, it calls the UMS tool `add_action_dependency` for each target UMS action ID it depends on.
+
+*   **`async def _record_action_completion_internal(self, action_id, result)`**
+    *   **Purpose:** An internal helper to log the completion (or failure) of an agent's action in the UMS.
+    *   **Does:** It calls the UMS tool `record_action_completion` with the UMS action ID, the outcome status (completed/failed), and the result obtained from the tool.
+
+*   **`async def _run_auto_linking(self, memory_id, *, workflow_id, context_id)`**
+    *   **Purpose:** A background task to automatically try to find and create semantic links between a newly stored memory and existing memories in the UMS.
+    *   **Does:** After a short delay, it takes a new memory, searches the UMS for other semantically similar memories, and if any are found above a certain similarity threshold, it calls the UMS tool `create_memory_link` to create a "related" link between them.
+
+*   **`async def _check_and_trigger_promotion(self, memory_id, *, workflow_id, context_id)`**
+    *   **Purpose:** A background task to check if a memory in UMS has become important enough (e.g., due to frequent access or high confidence) to be "promoted" to a higher cognitive level (like from episodic to semantic).
+    *   **Does:** It calls the UMS tool `promote_memory_level` for the given memory ID. The UMS tool itself contains the logic to decide if promotion is warranted and performs the update.
+
+*   **`async def _execute_tool_call_internal(self, tool_name, arguments, record_action, planned_dependencies)`**
+    *   **Purpose:** The agent's central function for executing any tool, whether it's a UMS tool or an internal agent function.
+    *   **Does:** It finds the server for the tool, automatically adds common arguments like `workflow_id` if needed, checks prerequisites (via `_check_prerequisites`), records the action start in UMS (if `record_action` is true and it's not an internal/meta tool), executes the tool via `MCPClient.execute_tool` (with retries), records the action completion in UMS, updates internal tool usage statistics, and triggers background tasks for memory linking or promotion if the tool call resulted in new memories or significant memory access. It also handles errors and updates the agent's `last_error_details`.
+
+*   **`async def _handle_workflow_and_goal_side_effects(self, tool_name, arguments, result_content)`**
+    *   **Purpose:** To update the agent's internal state (`self.state`) after specific UMS tools related to workflow or goal management have been successfully executed.
+    *   **Does:**
+        *   If `TOOL_CREATE_WORKFLOW` succeeded: It sets the agent's current `workflow_id`, `context_id`, `thought_chain_id`, creates the root UMS goal for this new workflow (by calling `TOOL_CREATE_GOAL`), updates the agent's `goal_stack` and `current_goal_id` to this new root UMS goal, and sets an initial plan step to assess this new UMS goal.
+        *   If `TOOL_CREATE_GOAL` (called by the LLM) succeeded: It adds the new UMS goal to the agent's `goal_stack`, makes it the `current_goal_id`, and sets a plan to start working on this new sub-goal.
+        *   If `TOOL_UPDATE_GOAL_STATUS` succeeded (marking a UMS goal as completed/failed): It updates the status of that goal in the agent's local `goal_stack`. If the marked goal was the agent's `current_goal_id` and is now terminal, it pops it, sets the `current_goal_id` to its parent (from UMS result), rebuilds the local `goal_stack` view from UMS for this new parent, and sets a plan to re-assess. If a root UMS goal was finished, it sets `self.state.goal_achieved_flag`.
+        *   If `TOOL_UPDATE_WORKFLOW_STATUS` succeeded (marking a workflow terminal): If it was the agent's current workflow, it pops it from the `workflow_stack`. If there's a parent workflow, it switches focus to that; otherwise, it signals overall completion.
+
+*   **`async def _fetch_goal_stack_from_ums(self, leaf_goal_id)`**
+    *   **Purpose:** To get the full hierarchy of parent goals from the UMS, leading up to a given (leaf) goal ID.
+    *   **Does:** Starting with the `leaf_goal_id`, it repeatedly calls the UMS tool `get_goal_details` to fetch a goal, then gets its `parent_goal_id`, and fetches that parent, continuing until it reaches a goal with no parent (a root goal) or hits a depth limit. It returns these goals as a list, ordered from root to leaf.
+
+*   **`async def _apply_heuristic_plan_update(self, last_decision, last_tool_result_content)`**
+    *   **Purpose:** A fallback mechanism to update the agent's plan if the LLM doesn't explicitly provide a new plan (e.g., after a simple thought or a tool call that doesn't inherently lead to a replan).
+    *   **Does:** It looks at the last LLM decision and tool result. If an action was successful, it marks the current plan step as "completed," adds a summary of the result, and removes the step from the plan. If the plan becomes empty, it adds a default next step (like "Analyze overall result"). If an action failed, it marks the step "failed" and inserts a new step to "Analyze failure... and replan," setting `needs_replan` to true. It also manages error counters and success counters for meta-cognition.
+
+*   **`_adapt_thresholds(self, stats)`**
+    *   **Purpose:** To dynamically adjust how frequently the agent performs self-reflection and memory consolidation based on its recent performance and memory state.
+    *   **Does:** It looks at UMS statistics (like the ratio of temporary vs. permanent memories, tool failure rates). If there are too many temporary memories, it makes the agent consolidate memories sooner. If there are many errors, it makes the agent reflect on its process sooner. If things are going smoothly, it lets the agent work longer before these meta-cognitive pauses.
+
+*   **`async def _run_periodic_tasks(self)`**
+    *   **Purpose:** The agent's internal "scheduler" for triggering various background and meta-cognitive activities.
+    *   **Does:** It checks several counters/timers. If enough successful actions have occurred or enough loops have passed, it triggers UMS tools for:
+        *   Reflection (`generate_reflection`) on its recent activities.
+        *   Memory consolidation (`consolidate_memories`) to summarize or find insights in existing memories.
+        *   Working memory optimization (`optimize_working_memory`) and focus update (`auto_update_focus`).
+        *   Checking if any memories are ready for promotion (`_trigger_promotion_checks`).
+        *   Fetching UMS statistics (`compute_memory_statistics`) to adapt its thresholds.
+        *   Running UMS maintenance (`delete_expired_memories`).
+
+*   **`async def _trigger_promotion_checks(self)`**
+    *   **Purpose:** To identify candidate memories in UMS that might be ready for promotion to a higher cognitive level and start background checks for them.
+    *   **Does:** It queries the UMS for recently accessed episodic memories and semantic memories that are procedures/skills. For each candidate, it starts a background task (`_check_and_trigger_promotion`) to evaluate if it should be promoted.
+
+*   **`async def _gather_context(self)`** (As per your latest version)
+    *   **Purpose:** To collect all the necessary information from the agent's internal state and the UMS that the LLM will need to make its next decision.
+    *   **Does:**
+        1.  Assembles information from the agent's own state (current plan, last action, errors, workflow stack, current thought chain ID, meta-feedback).
+        2.  Constructs the `agent_assembled_goal_context` by:
+            *   If a `current_goal_id` is set, it first tries to fetch the full goal stack from UMS leading to this goal using `_fetch_goal_stack_from_ums`.
+            *   If the UMS fetch is successful and consistent, it uses that.
+            *   If the UMS fetch fails or is inconsistent, but the agent's internal `self.state.goal_stack` seems valid for the `current_goal_id` (important for the turn right after a new root goal is created by the agent), it uses the agent's local stack.
+            *   Otherwise, it records an error if goal context can't be determined.
+        3.  Calls the UMS tool `get_rich_context_package` to get a bundle of relevant memories (working, core, proactive, procedural) and contextual links from the UMS for the current workflow/context.
+        4.  Optionally (though currently commented out in your code), it could perform an agent-side compression of the gathered context if it's too large.
+        5.  Returns a comprehensive dictionary (`context_payload`) containing all this information.
+
+*   **`async def prepare_next_turn_data(self, overall_goal)`**
+    *   **Purpose:** This is the main method called by the MCPClient to get everything needed for the LLM to take its next "turn."
+    *   **Does:** It first runs any scheduled periodic/background tasks (`_run_periodic_tasks`). Then, it gathers all the current context using `_gather_context`. Finally, it uses this context and the `overall_goal` (or current operational goal) to build the actual prompt messages for the LLM via `_construct_agent_prompt`. It returns these messages, the list of tool schemas the LLM can use, and a snapshot of the context that was gathered.
+
+*   **`async def execute_llm_decision(self, llm_decision)`**
+    *   **Purpose:** To take the decision made by the LLM and carry it out.
+    *   **Does:**
+        *   It parses the LLM's decision, which could be:
+            *   To call a tool: It then uses `_execute_tool_call_internal` to run the tool.
+            *   To record a thought: It calls `TOOL_RECORD_THOUGHT`.
+            *   To signal overall completion: It marks the root UMS goal as completed and sets a flag.
+            *   To update the plan: It validates and applies the new plan from the LLM.
+            *   An error from the LLM: It logs this and sets up for replanning.
+        *   If the LLM didn't provide an explicit plan update (and didn't just call the plan update tool), it uses `_apply_heuristic_plan_update` to make a common-sense adjustment to the current plan (e.g., mark step complete, handle failure).
+        *   It checks if the agent has made too many consecutive errors and stops if so.
+        *   It saves the agent's state.
+        *   It determines if the agent should continue looping or stop (e.g., if the goal is achieved, max errors, or shutdown signaled).
+
+*   **`async def run_main_loop(self, initial_goal, max_loops)`**
+    *   **Purpose:** This method is called by MCPClient's `run_self_driving_agent` to execute one cycle of the agent's operation when it's running autonomously.
+    *   **Does:**
+        *   If it's the very first run for this agent instance (no `workflow_id` yet), it calls `TOOL_CREATE_WORKFLOW` (via `_execute_tool_call_internal`) to establish the initial UMS workflow and its root UMS goal based on the `initial_goal`.
+        *   It increments its internal loop counter.
+        *   It then calls `prepare_next_turn_data` to get the prompt, tools, and context for the LLM.
+        *   It returns this package of data to the MCPClient, which will then make the actual LLM call and pass the decision back to the agent's `execute_llm_decision` method (orchestrated by `run_self_driving_agent` in MCPClient).
+        *   It signals to MCPClient if the agent believes it should stop (e.g., goal achieved, shutdown).
